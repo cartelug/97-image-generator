@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, ArrowRight, Check, Columns2, Copy, Loader2, Maximize2, Pencil, RefreshCw, Star, X } from "lucide-react";
 import { useApp } from "../AppProvider";
 import { CompareSlider, DownloadMenu, SmartImg, Thumb } from "../ui";
@@ -18,17 +18,40 @@ const STEPS = [
   { id: "saving", label: "Saving to your gallery" },
 ];
 
+/** Typical seconds for this model + quality: the median of your own finished renders, or a sane default. */
+const DEFAULT_SECS: Record<string, number> = { low: 22, medium: 40, high: 70, xhigh: 110, max: 150, auto: 60 };
+function expectedSecs(gen: Gen, gens: Gen[]) {
+  const past = gens
+    .filter((g) => g.status === "done" && g.durationMs && g.input.model === gen.input.model && g.input.quality === gen.input.quality && g.input.n === gen.input.n)
+    .slice(0, 12)
+    .map((g) => g.durationMs! / 1000)
+    .sort((a, b) => a - b);
+  if (past.length >= 2) return past[Math.floor(past.length / 2)];
+  return (DEFAULT_SECS[gen.input.quality] ?? 60) * (1 + (gen.input.n - 1) * 0.35) * (gen.input.refs.length ? 1.2 : 1);
+}
+
+/** Progress that follows the server's real phases; inside "rendering" it eases toward 92% on your typical time and never claims done early. */
+function progressFor(phase: string | undefined, sec: number, exp: number) {
+  if (phase === "saving") return 0.96;
+  if (phase !== "rendering") return Math.min(0.08, 0.02 + sec * 0.01);
+  return 0.08 + 0.84 * (1 - Math.exp((-2.2 * sec) / Math.max(8, exp)));
+}
+
 function Running({ gen }: { gen: Gen }) {
-  const { cancel } = useApp();
+  const { cancel, gens } = useApp();
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 500);
+    const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
   }, []);
+  const exp = useMemo(() => expectedSecs(gen, gens), [gen, gens]);
   const [w, h] = gen.size === "auto" ? [1, 1] : gen.size.split("x").map(Number);
   const idx = Math.max(0, STEPS.findIndex((s) => s.id === (gen.phase === "queued" ? "preparing" : gen.phase)));
   const sec = Math.max(0, Math.round((now - new Date(gen.createdAt).getTime()) / 1000));
   const model = MODELS.find((m) => m.id === gen.input.model)?.name;
+  const pct = progressFor(gen.phase, sec, exp);
+  const left = Math.round(exp - sec);
+  const eta = gen.phase === "saving" ? "Almost there…" : gen.phase !== "rendering" ? "Getting ready…" : left > 4 ? `About ${left < 60 ? `${left}s` : `${Math.ceil(left / 60)} min`} left` : "Taking a little longer than usual…";
   return (
     <div className="stage-card running" role="status" aria-live="polite">
       <div className="skeleton" style={{ aspectRatio: `${w}/${h}` }}>
@@ -36,18 +59,22 @@ function Running({ gen }: { gen: Gen }) {
         <div className="shimmer" aria-hidden />
       </div>
       <div className="progress-card">
-        <div className="progress-rail" aria-hidden><i /></div>
+        <div className="progress-top">
+          <span className="progress-pct mono">{Math.round(pct * 100)}%</span>
+          <span className="muted tiny">{eta}</span>
+        </div>
+        <div className="progress-rail" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct * 100)} aria-label="Render progress"><i style={{ transform: `scaleX(${pct})` }} /></div>
         <ol className="steps">
           {STEPS.map((s, i) => (
             <li key={s.id} className={i < idx ? "done" : i === idx ? "now" : ""}>
               {i < idx ? <Check size={14} /> : i === idx ? <Loader2 className="spin" size={14} /> : <span className="pip" />}
-              {s.id === "rendering" ? `Rendering with ${model}` : s.label}
+              <span>{s.id === "rendering" ? `Rendering with ${model}` : s.label}</span>
             </li>
           ))}
         </ol>
         <div className="progress-foot">
           <span className="mono">{Math.floor(sec / 60)}:{String(sec % 60).padStart(2, "0")}</span>
-          <span className="muted tiny">High-quality renders can take 1–3 minutes. You can leave this page — it keeps rendering.</span>
+          <span className="muted tiny">You can leave this page — it keeps rendering.</span>
           <button className="btn quiet sm" onClick={() => cancel(gen.id)}><X size={14} /> Cancel</button>
         </div>
       </div>
@@ -84,9 +111,12 @@ function Done({ gen }: { gen: Gen }) {
   const ref0 = gen.input.refs[0];
   const model = MODELS.find((m) => m.id === gen.input.model)?.name;
   const q = QUALITIES.find((x) => x.id === gen.input.quality)?.label;
+  // Celebrate only renders that finished just now, not every old image you click on.
+  const fresh = useMemo(() => !!gen.finishedAt && Date.now() - new Date(gen.finishedAt).getTime() < 15_000, [gen.finishedAt]);
   if (!img) return null;
   return (
-    <div className="stage-card done">
+    <div className={`stage-card done${fresh ? " fresh" : ""}`}>
+      {fresh && <Burst />}
       <div className="viewer">
         {cmp && ref0 ? (
           <CompareSlider before={ref0} after={img.id} ratio={`${img.width}/${img.height}`} beforeLabel="Original" afterLabel="Result" />
@@ -118,6 +148,14 @@ function Done({ gen }: { gen: Gen }) {
       </div>
       {open && <Lightbox gen={gen} imageId={img.id} onClose={() => setOpen(false)} />}
     </div>
+  );
+}
+
+function Burst() {
+  return (
+    <span className="burst" aria-hidden>
+      {Array.from({ length: 14 }, (_, i) => <i key={i} style={{ ["--a" as string]: `${(360 / 14) * i}deg`, ["--d" as string]: `${70 + (i % 3) * 26}px` }} />)}
+    </span>
   );
 }
 

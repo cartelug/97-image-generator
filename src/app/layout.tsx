@@ -1,7 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import "@fontsource-variable/manrope";
-import "@fontsource-variable/jetbrains-mono";
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
 import "./globals.css";
+import "./polish.css";
 import { Preloader } from "@/components/Preloader";
 
 export const metadata: Metadata = {
@@ -18,7 +19,7 @@ const bootScript = `try{if(sessionStorage.getItem('97ig.boot'))document.document
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: bootScript }} />
       </head>

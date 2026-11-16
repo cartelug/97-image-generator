@@ -33,9 +33,15 @@ export type Usage = {
   calibration: Calibration;
   budget: Settings["budget"];
 };
-export type Toast = { id: number; msg: string; kind: "info" | "ok" | "error" };
+export type Toast = { id: number; msg: string; kind: "info" | "ok" | "error"; out?: boolean };
+/** A reference image on its way to the server, with its real progress. */
+export type PendingUpload = { key: string; name: string; preview: string; stage: "queued" | "compressing" | "uploading" | "processing" | "done" | "error"; pct: number; error?: string };
 
 type Ctx = {
+  pending: PendingUpload[];
+  retryUpload: (key: string) => void;
+  dismissUpload: (key: string) => void;
+  dismissToast: (id: number) => void;
   ready: boolean;
   me: Me | null;
   demo: boolean;
@@ -106,6 +112,31 @@ async function prepareUpload(file: File): Promise<File> {
   return new File([buf], name, { type: file.type || "image/jpeg" });
 }
 
+/** Upload one file with XHR so we can report real byte progress. */
+function xhrUpload(file: File, onProgress: (p: number) => void): Promise<Asset[]> {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", "/api/uploads");
+    x.withCredentials = true;
+    x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    x.upload.onload = () => onProgress(1);
+    x.onload = () => {
+      let data: { assets?: Asset[]; error?: string } | null = null;
+      try {
+        data = JSON.parse(x.responseText);
+      } catch {}
+      if (x.status === 401 && !location.pathname.startsWith("/login")) location.href = `/login?next=${encodeURIComponent(location.pathname)}`;
+      if (x.status >= 200 && x.status < 300 && data?.assets?.length) resolve(data.assets);
+      else reject(new ApiError(x.status, data?.error || `Upload failed (${x.status}).`));
+    };
+    x.onerror = () => reject(new ApiError(0, "Upload interrupted."));
+    x.onabort = () => reject(new ApiError(0, "Upload cancelled."));
+    const fd = new FormData();
+    fd.append("files", file, file.name);
+    x.send(fd);
+  });
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
@@ -124,11 +155,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const toastId = useRef(0);
   const prevStatus = useRef<Record<string, string>>({});
 
+  const [pending, setPending] = useState<PendingUpload[]>([]);
+  const pendingRef = useRef<PendingUpload[]>([]);
+  pendingRef.current = pending;
+  const rawFiles = useRef(new Map<string, File>());
+  const readyFiles = useRef(new Map<string, File>());
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((t) => t.map((x) => (x.id === id ? { ...x, out: true } : x)));
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 260);
+  }, []);
+
   const toast = useCallback((msg: string, kind: Toast["kind"] = "info") => {
     const id = ++toastId.current;
-    setToasts((t) => [...t, { id, msg, kind }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 7000 : 3800);
-  }, []);
+    setToasts((t) => [...t.slice(-3), { id, msg, kind }]);
+    setTimeout(() => dismissToast(id), kind === "error" ? 7000 : 3800);
+  }, [dismissToast]);
 
   const fail = useCallback((e: unknown) => toast(e instanceof ApiError ? e.message : "Something went wrong.", "error"), [toast]);
 
@@ -182,7 +224,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, []);
 
-  const upsert = useCallback((g: Gen) => setGens((list) => (list.some((x) => x.id === g.id) ? list.map((x) => (x.id === g.id ? g : x)) : [g, ...list])), []);
+  // Only touch state when something visible changed, so polling doesn't re-render the whole app every tick.
+  const upsert = useCallback((g: Gen) => setGens((list) => {
+    const i = list.findIndex((x) => x.id === g.id);
+    if (i < 0) return [g, ...list];
+    const o = list[i];
+    if (o.status === g.status && o.phase === g.phase && o.images.length === g.images.length && o.favorite === g.favorite && o.input.projectId === g.input.projectId && o.error === g.error) return list;
+    const next = list.slice();
+    next[i] = g;
+    return next;
+  }), []);
 
   // poll running generations
   const running = useMemo(() => gens.filter((g) => g.status === "running").map((g) => g.id).join(","), [gens]);
@@ -190,6 +241,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!running) return;
     const ids = running.split(",");
     const t = setInterval(async () => {
+      if (document.hidden) return; // nothing to animate while the tab is in the background
       for (const id of ids) {
         try {
           const { generation } = await api<{ generation: Gen }>(`/api/generations/${id}`);
@@ -199,6 +251,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             prevStatus.current[id] = generation.status;
             if (generation.status === "done") {
               toast("Your image is ready.", "ok");
+              try {
+                navigator.vibrate?.(14);
+              } catch {}
               refreshUsage();
             } else if (generation.status === "error") toast(generation.error || "Generation failed.", "error");
           }
@@ -276,23 +331,62 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fail, refreshUsage]);
 
+  const patchPending = useCallback((key: string, p: Partial<PendingUpload>) => setPending((l) => l.map((x) => (x.key === key ? { ...x, ...p } : x))), []);
+  const dropPending = useCallback((key: string) => {
+    setPending((l) => {
+      const hit = l.find((x) => x.key === key);
+      if (hit) URL.revokeObjectURL(hit.preview);
+      return l.filter((x) => x.key !== key);
+    });
+    rawFiles.current.delete(key);
+    readyFiles.current.delete(key);
+  }, []);
+
+  /** Compress → upload (real %) → server processing → ready. Each file on its own, so one bad photo doesn't sink the rest. */
+  const runUpload = useCallback(async (key: string) => {
+    const raw = rawFiles.current.get(key);
+    if (!raw) return;
+    try {
+      let f = readyFiles.current.get(key);
+      if (!f) {
+        patchPending(key, { stage: "compressing", pct: 0, error: undefined });
+        // Copy each photo into memory first (and shrink big phone photos). iPhone Safari
+        // fails the upload ("Load failed") if it still points at the original picked file.
+        f = await prepareUpload(raw);
+        readyFiles.current.set(key, f);
+      }
+      patchPending(key, { stage: "uploading", pct: 0, error: undefined });
+      const made = await xhrUpload(f, (p) => patchPending(key, { pct: p, stage: p >= 1 ? "processing" : "uploading" }));
+      const a = made[0];
+      patchPending(key, { stage: "done", pct: 1 });
+      await new Promise((r) => setTimeout(r, 520)); // let the ✓ land before the tile swaps
+      setAssets((list) => [a, ...list]);
+      setDraftState((d) => (d && d.refs.length < 16 ? { ...d, refs: [...d.refs, { id: a.id, name: a.name, kind: "upload" as const }] } : d));
+      dropPending(key);
+    } catch (e) {
+      patchPending(key, { stage: "error", error: e instanceof ApiError ? e.message : "Upload failed." });
+    }
+  }, [patchPending, dropPending]);
+
   const uploadFiles = useCallback(async (files: File[]) => {
     if (!files.length || !draft) return;
-    const room = 16 - draft.refs.length;
+    const busy = pendingRef.current.filter((p) => p.stage !== "error").length;
+    const room = 16 - draft.refs.length - busy;
     if (room <= 0) return toast("You can use up to 16 reference images.", "error");
-    const fd = new FormData();
-    try {
-      // Copy each photo into memory first (and shrink big phone photos). iPhone Safari
-      // fails the upload ("Load failed") if it still points at the original picked file.
-      const ready = await Promise.all(files.slice(0, room).map(prepareUpload));
-      ready.forEach((f) => fd.append("files", f, f.name));
-      const { assets: made } = await api<{ assets: Asset[] }>("/api/uploads", { form: fd });
-      setAssets((a) => [...made.reverse(), ...a]);
-      setDraftState((d) => (d ? { ...d, refs: [...d.refs, ...made.map((a) => ({ id: a.id, name: a.name, kind: "upload" as const }))].slice(0, 16) } : d));
-    } catch (e) {
-      fail(e);
-    }
-  }, [draft, fail, toast]);
+    if (files.length > room) toast(`Only ${room} more reference image${room === 1 ? "" : "s"} fit — added the first ${room}.`);
+    const items = files.slice(0, room).map((file) => {
+      const key = `up_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      rawFiles.current.set(key, file);
+      return { key, name: file.name || "reference", preview: URL.createObjectURL(file), stage: "queued" as const, pct: 0 };
+    });
+    setPending((l) => [...l, ...items]);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(3, items.length) }, async () => {
+      while (next < items.length) await runUpload(items[next++].key);
+    }));
+  }, [draft, toast, runUpload]);
+
+  const retryUpload = useCallback((key: string) => void runUpload(key), [runUpload]);
 
   const addBrandRef = useCallback(async () => {
     try {
@@ -391,7 +485,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   if (!ready || !settings || !draft) return <>{ready ? <div className="boot-fail">Could not load your studio. Refresh to try again.</div> : null}</>;
 
   return (
-    <C.Provider value={{ ready, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, setActiveId, toasts, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout }}>
+    <C.Provider value={{ pending, retryUpload, dismissUpload: dropPending, dismissToast, ready, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, setActiveId, toasts, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout }}>
       {children}
     </C.Provider>
   );

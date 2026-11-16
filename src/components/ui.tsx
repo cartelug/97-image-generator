@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, Download, X } from "lucide-react";
 import { dlUrl, imgUrl } from "@/lib/client";
 import { useApp } from "./AppProvider";
@@ -36,8 +37,29 @@ export function Thumb({ id, alt = "", className = "" }: { id: string; alt?: stri
 }
 
 export function Segmented<T extends string>({ value, options, onChange, label, small = false }: { value: T; options: { id: T; label: string; hint?: string }[]; onChange: (v: T) => void; label: string; small?: boolean }) {
+  // A single pill that slides to the selected option instead of jumping.
+  const wrap = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [live, setLive] = useState(false);
+  useLayoutEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const measure = () => {
+      const b = el.querySelector<HTMLElement>("button.on");
+      setBox(b ? { x: b.offsetLeft, y: b.offsetTop, w: b.offsetWidth, h: b.offsetHeight } : null);
+    };
+    measure();
+    const raf = requestAnimationFrame(() => setLive(true));
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro?.disconnect();
+    };
+  }, [value]);
   return (
-    <div className={`seg${small ? " sm" : ""}`} role="radiogroup" aria-label={label}>
+    <div ref={wrap} className={`seg has-thumb${small ? " sm" : ""}${live ? " live" : ""}`} role="radiogroup" aria-label={label}>
+      {box && <span className="seg-thumb" aria-hidden style={{ transform: `translate(${box.x}px, ${box.y}px)`, width: box.w, height: box.h }} />}
       {options.map((o) => (
         <button key={o.id} type="button" role="radio" aria-checked={value === o.id} className={value === o.id ? "on" : ""} onClick={() => onChange(o.id)} title={o.hint}>
           {o.label}
@@ -142,9 +164,21 @@ export function CompareSlider({ before, after, beforeLabel = "Before", afterLabe
 }
 
 export function Modal({ children, onClose, label }: { children: React.ReactNode; onClose: () => void; label: string }) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const sheet = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ y: number; dy: number } | null>(null);
+  const [leaving, setLeaving] = useState(false);
+  const close = () => {
+    if (leaving) return;
+    setLeaving(true);
+    setTimeout(() => closeRef.current(), 220);
+  };
+  const closeFn = useRef(close);
+  closeFn.current = close;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
-    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const key = (e: KeyboardEvent) => e.key === "Escape" && closeFn.current();
     document.addEventListener("keydown", key);
     document.body.style.overflow = "hidden";
     return () => {
@@ -152,15 +186,44 @@ export function Modal({ children, onClose, label }: { children: React.ReactNode;
       document.body.style.overflow = "";
       prev?.focus?.();
     };
-  }, [onClose]);
-  return (
-    <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={label}>
-        <button className="icon-btn modal-x" onClick={onClose} aria-label="Close" autoFocus>
+  }, []);
+  // Phones: the modal is a bottom sheet — pull it down to dismiss.
+  const onTouchStart = (e: React.TouchEvent) => {
+    const el = sheet.current;
+    if (!el || window.innerWidth > 1000 || el.scrollTop > 0) return;
+    if ((e.target as HTMLElement).closest(".cmp, input, select, textarea")) return;
+    drag.current = { y: e.touches[0].clientY, dy: 0 };
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    const d = drag.current;
+    const el = sheet.current;
+    if (!d || !el) return;
+    d.dy = Math.max(0, e.touches[0].clientY - d.y);
+    el.style.transition = "none";
+    el.style.transform = `translateY(${d.dy}px)`;
+  };
+  const onTouchEnd = () => {
+    const d = drag.current;
+    const el = sheet.current;
+    drag.current = null;
+    if (!d || !el) return;
+    el.style.transition = "";
+    if (d.dy > 110) {
+      el.style.transform = "translateY(100%)";
+      setTimeout(() => closeRef.current(), 200);
+    } else el.style.transform = "";
+  };
+  // Portal to <body> so animated/transformed ancestors (e.g. the stage card) can't trap the fixed overlay.
+  return createPortal(
+    <div className={`modal-back${leaving ? " leaving" : ""}`} onMouseDown={(e) => e.target === e.currentTarget && close()}>
+      <div ref={sheet} className="modal" role="dialog" aria-modal="true" aria-label={label} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
+        <span className="sheet-grip" aria-hidden />
+        <button className="icon-btn modal-x" onClick={close} aria-label="Close" autoFocus>
           <X size={18} />
         </button>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

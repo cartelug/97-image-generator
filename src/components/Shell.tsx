@@ -16,16 +16,18 @@ const NAV = [
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  const { demo, usage, toasts, me } = useApp();
+  const { demo, usage, toasts, me, dismissToast } = useApp();
   const b = usage?.budget;
   const pct = b && b.monthlyUsd > 0 && usage ? usage.spent / b.monthlyUsd : 0;
+  const navIdx = NAV.findIndex((n) => path.startsWith(n.href));
   return (
     <div className="shell">
       <nav className="rail" aria-label="Main">
         <Link href="/studio" className="rail-brand" aria-label="97 Image Generator — Studio">
           <Logo height={30} />
         </Link>
-        <div className="rail-links">
+        <div className="rail-links" style={{ ["--i" as string]: Math.max(0, navIdx) }}>
+          {navIdx >= 0 && <span className="rail-ind" aria-hidden />}
           {NAV.map(({ href, label, Icon }) => (
             <Link key={href} href={href} className={`rail-link${path.startsWith(href) ? " on" : ""}`} aria-current={path.startsWith(href) ? "page" : undefined}>
               <Icon size={20} strokeWidth={1.75} />
@@ -39,6 +41,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </nav>
       <div className="main">
         <header className="topbar">
+          <Link href="/studio" className="top-logo" aria-label="Studio"><Logo height={22} /></Link>
           <div className="top-brand">
             <b>97 IMAGE GENERATOR</b>
             <span>THE 97 WORLD</span>
@@ -59,7 +62,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </div>
       <div className="toasts" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.kind}`}>
+          <div key={t.id} className={`toast ${t.kind}${t.out ? " out" : ""}`} onClick={() => dismissToast(t.id)}>
             {t.kind === "ok" ? <Check size={16} /> : t.kind === "error" ? <TriangleAlert size={16} /> : <Info size={16} />}
             <span>{t.msg}</span>
           </div>

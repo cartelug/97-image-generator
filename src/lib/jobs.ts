@@ -19,7 +19,6 @@ function clean(uid: string, raw: Partial<GenInput>): GenInput {
   const db = getDB(uid);
   const prompt = String(raw.prompt || "").trim();
   if (!prompt) throw new HttpError(400, "Describe the image you want first.");
-  if (prompt.length > 8000) throw new HttpError(400, "That prompt is too long (8,000 characters max).");
   const model = MODELS.some((m) => m.id === raw.model) ? String(raw.model) : MODELS[0].id;
   const aspect = ASPECTS.some((a) => a.id === raw.aspect) ? String(raw.aspect) : "1:1";
   const tier = ["standard", "high", "ultra"].includes(String(raw.tier)) ? String(raw.tier) : "standard";

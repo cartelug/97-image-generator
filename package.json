@@ -2,7 +2,7 @@
   "name": "97-image-generator",
   "version": "1.0.0",
   "private": true,
-  "description": "97 IMAGE GENERATOR \u2014 Official AI Creative Studio by THE 97 World",
+  "description": "97 IMAGE GENERATOR — Official AI Creative Studio by THE 97 World",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -14,8 +14,8 @@
     "node": ">=20.9"
   },
   "dependencies": {
-    "@fontsource-variable/jetbrains-mono": "^5.3.0",
-    "@fontsource-variable/manrope": "^5.3.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
     "fflate": "^0.8.3",
     "jose": "^6.2.17",
     "lucide-react": "^1.73.0",

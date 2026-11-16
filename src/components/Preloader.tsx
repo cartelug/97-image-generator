@@ -15,7 +15,7 @@ export function Preloader() {
       return;
     }
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const minMs = reduce ? 250 : 1300; // short on purpose: never hold the app hostage
+    const minMs = reduce ? 200 : 800; // short on purpose: never hold the app hostage
     const t0 = performance.now();
     let done = 0;
     const total = 3;
@@ -37,7 +37,7 @@ export function Preloader() {
       try {
         sessionStorage.setItem("97ig.boot", "1");
       } catch {}
-      setTimeout(() => setGone(true), reduce ? 80 : 650);
+      setTimeout(() => setGone(true), reduce ? 80 : 450);
     };
     const tick = () => {
       const el = performance.now() - t0;

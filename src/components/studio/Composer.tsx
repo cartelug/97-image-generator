@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, BookmarkPlus, ChevronDown, Loader2, Plus, Stamp, Undo2, Upload, WandSparkles, X, Check, ArrowRight, Trash2, Info } from "lucide-react";
-import { useApp } from "../AppProvider";
+import { Bookmark, BookmarkPlus, ChevronDown, Loader2, Plus, Stamp, Undo2, Upload, WandSparkles, X, Check, ArrowRight, Trash2, Info, RotateCw, TriangleAlert } from "lucide-react";
+import { useApp, type PendingUpload } from "../AppProvider";
 import { Segmented, Thumb, Toggle, useOutside } from "../ui";
 import { PRESETS } from "@/lib/presets";
 import { PRESET_ICONS, applyPreset } from "./preset";
@@ -10,8 +10,42 @@ import { COMPLEXITIES, FORMATS, MODELS, QUALITIES } from "@/lib/models";
 import { estimateCost, fmtUsd } from "@/lib/pricing";
 import { api, ApiError } from "@/lib/client";
 
+const STAGE_LABEL: Record<PendingUpload["stage"], string> = { queued: "Waiting", compressing: "Optimising", uploading: "Uploading", processing: "Processing", done: "Ready", error: "Failed" };
+
+/** One reference on its way up: local preview + a ring that tracks the real bytes sent. */
+function UploadTile({ u, onRetry, onRemove }: { u: PendingUpload; onRetry: () => void; onRemove: () => void }) {
+  const C = 2 * Math.PI * 17;
+  const pct = u.stage === "uploading" ? u.pct : u.stage === "processing" || u.stage === "done" ? 1 : 0;
+  const spinning = u.stage === "queued" || u.stage === "compressing" || u.stage === "processing";
+  return (
+    <li className={`up-tile is-${u.stage}`} aria-label={`${u.name}: ${STAGE_LABEL[u.stage]}${u.stage === "uploading" ? ` ${Math.round(u.pct * 100)}%` : ""}`}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={u.preview} alt="" draggable={false} />
+      <span className="up-veil" aria-hidden />
+      {u.stage === "error" ? (
+        <button type="button" className="up-center up-retry" onClick={onRetry} title={u.error}>
+          <TriangleAlert size={16} />
+          <b>Retry</b>
+        </button>
+      ) : (
+        <span className="up-center" aria-hidden>
+          <svg className={`up-ring${spinning ? " spinning" : ""}`} viewBox="0 0 40 40">
+            <circle className="track" cx="20" cy="20" r="17" />
+            <circle className="bar" cx="20" cy="20" r="17" strokeDasharray={C} strokeDashoffset={spinning && u.stage !== "processing" ? C * 0.72 : C * (1 - pct)} />
+          </svg>
+          {u.stage === "done" ? <Check className="up-check" size={16} strokeWidth={3} /> : <b className="up-pct">{u.stage === "uploading" ? Math.round(u.pct * 100) : ""}</b>}
+        </span>
+      )}
+      <span className="up-label">{u.stage === "uploading" ? `${Math.round(u.pct * 100)}%` : STAGE_LABEL[u.stage]}</span>
+      {(u.stage === "error" || u.stage === "queued") && (
+        <button type="button" className="ref-x" aria-label={`Remove ${u.name}`} onClick={onRemove}><X size={12} /></button>
+      )}
+    </li>
+  );
+}
+
 export function Composer() {
-  const { draft, setDraft, settings, usage, demo, submit, submitting, uploadFiles, addBrandRef, removeAsset, assets, projects, createProject, prompts, savePrompt, deletePrompt, toast, updateSettings, gens } = useApp();
+  const { pending, retryUpload, dismissUpload, draft, setDraft, settings, usage, demo, submit, submitting, uploadFiles, addBrandRef, removeAsset, assets, projects, createProject, prompts, savePrompt, deletePrompt, toast, updateSettings, gens } = useApp();
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileIn = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
@@ -25,7 +59,8 @@ export function Composer() {
     const el = ta.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(320, Math.max(132, el.scrollHeight)) + "px";
+    const min = parseFloat(getComputedStyle(el).minHeight) || 96;
+    el.style.height = Math.min(window.innerWidth < 700 ? 240 : 360, Math.max(min, el.scrollHeight)) + "px";
   }, [draft.prompt]);
 
   const size = sizeFor(draft.aspect, draft.tier);
@@ -37,6 +72,9 @@ export function Composer() {
   const editing = !!draft.parentId && draft.refs.length > 0;
   const recentAssets = assets.filter((a) => !draft.refs.some((r) => r.id === a.id)).slice(0, 8);
   const running = gens.filter((g) => g.status === "running").length;
+  const moving = pending.filter((p) => p.stage !== "error" && p.stage !== "done");
+  const failed = pending.filter((p) => p.stage === "error").length;
+  const upPct = moving.length ? Math.round((moving.reduce((s, p) => s + (p.stage === "uploading" ? p.pct : p.stage === "processing" ? 1 : 0), 0) / moving.length) * 100) : 0;
 
   async function enhance() {
     if (draft.prompt.trim().length < 3) return toast("Type a few words first, then enhance.", "error");
@@ -90,6 +128,7 @@ export function Composer() {
             </div>
           </div>
         </div>
+        <div className="prompt-wrap">
         <textarea
           id="prompt"
           ref={ta}
@@ -102,6 +141,8 @@ export function Composer() {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && draft.prompt.trim()) submit();
           }}
         />
+        {draft.prompt.length > 0 && <span className="prompt-count mono" aria-hidden>{draft.prompt.length.toLocaleString()}</span>}
+        </div>
         <div className="presets" role="group" aria-label="Presets">
           {PRESETS.map((p) => {
             const Icon = PRESET_ICONS[p.icon];
@@ -117,15 +158,21 @@ export function Composer() {
       <div className="step">
         <div className="step-head">
           <span className="eyebrow"><i>2</i> {editing ? "Image to edit & references" : "References"} <em>optional</em></span>
-          <span className="muted tiny">{draft.refs.length}/16</span>
+          {moving.length > 0 ? (
+            <span className="up-sum tiny" role="status" aria-live="polite"><i className="up-dot" /> Uploading {moving.length} · {upPct}%</span>
+          ) : failed > 0 ? (
+            <span className="up-sum tiny err" role="status">{failed} failed — tap to retry</span>
+          ) : (
+            <span className="muted tiny">{draft.refs.length}/16</span>
+          )}
         </div>
         <div
-          className={`drop${drag ? " over" : ""}${draft.refs.length ? " has" : ""}`}
+          className={`drop${drag ? " over" : ""}${draft.refs.length || pending.length ? " has" : ""}`}
           onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
           onDrop={(e) => { e.preventDefault(); setDrag(false); uploadFiles(Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"))); }}
         >
-          {draft.refs.length > 0 && (
+          {(draft.refs.length > 0 || pending.length > 0) && (
             <ul className="refs">
               {draft.refs.map((r, i) => (
                 <li key={r.id}>
@@ -135,6 +182,7 @@ export function Composer() {
                   <button className="ref-x" aria-label={`Remove ${r.name}`} onClick={() => { setDraft({ refs: draft.refs.filter((x) => x.id !== r.id), ...(draft.refs.length === 1 ? { parentId: undefined, preserve: false } : {}) }); }}><X size={12} /></button>
                 </li>
               ))}
+              {pending.map((u) => <UploadTile key={u.key} u={u} onRetry={() => retryUpload(u.key)} onRemove={() => dismissUpload(u.key)} />)}
             </ul>
           )}
           <button type="button" className="drop-btn" onClick={() => fileIn.current?.click()}>
@@ -214,7 +262,7 @@ export function Composer() {
         </div>
       </details>
 
-      <div className="gen-bar">
+      <div className={`gen-bar${running ? " busy" : ""}`}>
         <div className="gen-est" aria-live="polite">
           {demo ? (
             <span><b>Free</b> · demo mode</span>
@@ -228,7 +276,7 @@ export function Composer() {
         {over && <p className="gen-note danger"><Info size={14} /> This would go over your monthly budget. Lower quality/size or raise the limit in Account.</p>}
         {!over && warn && <p className="gen-note warn"><Info size={14} /> You’ve used {Math.round((usage!.spent / b!.monthlyUsd) * 100)}% of your monthly budget.</p>}
         <button className="btn primary xl" disabled={submitting || !draft.prompt.trim()} onClick={() => submit()}>
-          {submitting ? <Loader2 className="spin" size={20} /> : <>Generate Image <ArrowRight size={20} /></>}
+          {submitting ? <><Loader2 className="spin" size={20} /> Starting…</> : <>Generate Image <ArrowRight className="go-arrow" size={20} /></>}
         </button>
         <p className="muted tiny center gen-hint">{!draft.prompt.trim() ? "Describe your image to begin" : running ? `${running} rendering · you can keep creating` : "Ctrl / ⌘ + Enter to generate"}</p>
       </div>
