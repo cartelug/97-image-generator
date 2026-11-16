@@ -1,0 +1,371 @@
+"use client";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { api, ApiError } from "@/lib/client";
+import type { Asset, Gen, GenInput, Me, Project, SavedPrompt, Settings } from "@/lib/types";
+import type { Calibration } from "@/lib/pricing";
+
+export type RefItem = { id: string; name: string; kind: "upload" | "result" | "brand" };
+export type Draft = {
+  prompt: string;
+  refs: RefItem[];
+  aspect: string;
+  tier: string;
+  model: string;
+  quality: GenInput["quality"];
+  complexity: Settings["complexity"];
+  n: number;
+  format: GenInput["format"];
+  transparent: boolean;
+  projectId: string;
+  presetId?: string;
+  preserve: boolean;
+  parentId?: string;
+};
+export type Usage = {
+  month: string;
+  spent: number;
+  images: number;
+  verified: number;
+  unverified: number;
+  byModel: Record<string, { usd: number; images: number }>;
+  recent: { id: string; at: string; model: string; quality: string; images: number; usd: number; actual: boolean; demo: boolean; thumb?: string }[];
+  calibration: Calibration;
+  budget: Settings["budget"];
+};
+export type Toast = { id: number; msg: string; kind: "info" | "ok" | "error" };
+
+type Ctx = {
+  ready: boolean;
+  me: Me | null;
+  demo: boolean;
+  settings: Settings;
+  projects: Project[];
+  prompts: SavedPrompt[];
+  assets: Asset[];
+  gens: Gen[];
+  usage: Usage | null;
+  draft: Draft;
+  setDraft: (p: Partial<Draft>) => void;
+  activeId: string | null;
+  setActiveId: (id: string | null) => void;
+  toasts: Toast[];
+  toast: (msg: string, kind?: Toast["kind"]) => void;
+  submit: (override?: Partial<GenInput>) => Promise<Gen | null>;
+  submitting: boolean;
+  cancel: (id: string) => Promise<void>;
+  retry: (g: Gen) => Promise<void>;
+  patchGen: (id: string, p: { favorite?: boolean; projectId?: string }) => Promise<void>;
+  deleteGen: (id: string) => Promise<void>;
+  uploadFiles: (files: File[]) => Promise<void>;
+  addBrandRef: () => Promise<void>;
+  removeAsset: (id: string) => Promise<void>;
+  updateSettings: (p: Partial<Settings> | Record<string, unknown>) => Promise<void>;
+  createProject: (name: string) => Promise<Project | null>;
+  renameProject: (id: string, name: string) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
+  savePrompt: (text: string) => Promise<void>;
+  deletePrompt: (id: string) => Promise<void>;
+  editImage: (g: Gen, imageId: string) => void;
+  reuse: (g: Gen) => void;
+  refreshUsage: () => Promise<void>;
+  logout: () => Promise<void>;
+};
+
+const C = createContext<Ctx | null>(null);
+export const useApp = () => {
+  const v = useContext(C);
+  if (!v) throw new Error("useApp outside provider");
+  return v;
+};
+
+const DRAFT_KEY = "97ig.draft.v1";
+const emptyDraft = (s: Settings): Draft => ({ prompt: "", refs: [], aspect: s.aspect, tier: s.tier, model: s.model, quality: s.quality, complexity: s.complexity, n: 1, format: s.format, transparent: false, projectId: "proj_0000000000000000", preserve: false });
+
+export function AppProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [me, setMe] = useState<Me | null>(null);
+  const [demo, setDemo] = useState(false);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [gens, setGens] = useState<Gen[]>([]);
+  const [usage, setUsage] = useState<Usage | null>(null);
+  const [draft, setDraftState] = useState<Draft | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const toastId = useRef(0);
+  const prevStatus = useRef<Record<string, string>>({});
+
+  const toast = useCallback((msg: string, kind: Toast["kind"] = "info") => {
+    const id = ++toastId.current;
+    setToasts((t) => [...t, { id, msg, kind }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 7000 : 3800);
+  }, []);
+
+  const fail = useCallback((e: unknown) => toast(e instanceof ApiError ? e.message : "Something went wrong.", "error"), [toast]);
+
+  // initial load
+  useEffect(() => {
+    (async () => {
+      try {
+        const b = await api("/api/bootstrap");
+        setMe(b.user);
+        setDemo(b.demo);
+        setSettings(b.settings);
+        setProjects(b.projects);
+        setPrompts(b.prompts);
+        setAssets(b.assets);
+        setGens(b.generations);
+        setUsage(b.usage);
+        let d = emptyDraft(b.settings);
+        try {
+          const saved = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+          if (saved && typeof saved === "object") d = { ...d, ...saved, refs: Array.isArray(saved.refs) ? saved.refs : [] };
+        } catch {}
+        if (!b.projects.some((p: Project) => p.id === d.projectId)) d.projectId = "proj_0000000000000000";
+        setDraftState(d);
+        const running = (b.generations as Gen[]).find((g) => g.status === "running");
+        if (running) setActiveId(running.id);
+        for (const g of b.generations as Gen[]) prevStatus.current[g.id] = g.status;
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 401)) fail(e);
+      } finally {
+        setReady(true);
+      }
+    })();
+  }, [fail]);
+
+  // persist the draft so prompts + references survive failures, reloads and navigation
+  useEffect(() => {
+    if (!draft) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+      } catch {}
+    }, 250);
+    return () => clearTimeout(t);
+  }, [draft]);
+
+  const setDraft = useCallback((p: Partial<Draft>) => setDraftState((d) => (d ? { ...d, ...p } : d)), []);
+
+  const refreshUsage = useCallback(async () => {
+    try {
+      setUsage((await api("/api/usage")).usage);
+    } catch {}
+  }, []);
+
+  const upsert = useCallback((g: Gen) => setGens((list) => (list.some((x) => x.id === g.id) ? list.map((x) => (x.id === g.id ? g : x)) : [g, ...list])), []);
+
+  // poll running generations
+  const running = useMemo(() => gens.filter((g) => g.status === "running").map((g) => g.id).join(","), [gens]);
+  useEffect(() => {
+    if (!running) return;
+    const ids = running.split(",");
+    const t = setInterval(async () => {
+      for (const id of ids) {
+        try {
+          const { generation } = await api<{ generation: Gen }>(`/api/generations/${id}`);
+          upsert(generation);
+          const was = prevStatus.current[id];
+          if (generation.status !== "running" && was !== generation.status) {
+            prevStatus.current[id] = generation.status;
+            if (generation.status === "done") {
+              toast("Your image is ready.", "ok");
+              refreshUsage();
+            } else if (generation.status === "error") toast(generation.error || "Generation failed.", "error");
+          }
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 404) setGens((l) => l.filter((x) => x.id !== id));
+        }
+      }
+    }, 1200);
+    return () => clearInterval(t);
+  }, [running, upsert, toast, refreshUsage]);
+
+  const toInput = (d: Draft): Partial<GenInput> => ({
+    prompt: d.prompt, model: d.model, aspect: d.aspect, tier: d.tier, quality: d.quality,
+    complexity: d.complexity === "default" ? undefined : d.complexity, n: d.n, format: d.format, transparent: d.transparent,
+    refs: d.refs.map((r) => r.id), preserve: d.preserve && d.refs.length > 0, projectId: d.projectId, parentId: d.parentId, presetId: d.presetId,
+  });
+
+  const submit: Ctx["submit"] = useCallback(async (override) => {
+    if (!draft) return null;
+    setSubmitting(true);
+    try {
+      const { generation } = await api<{ generation: Gen }>("/api/generate", { json: { ...toInput(draft), ...override } });
+      prevStatus.current[generation.id] = "running";
+      upsert(generation);
+      setActiveId(generation.id);
+      router.push("/studio");
+      return generation;
+    } catch (e) {
+      fail(e); // the draft is untouched, so nothing is lost
+      return null;
+    } finally {
+      setSubmitting(false);
+    }
+  }, [draft, upsert, fail, router]);
+
+  const cancel = useCallback(async (id: string) => {
+    try {
+      await api(`/api/generations/${id}/cancel`, { method: "POST", json: {} });
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail]);
+
+  const retry = useCallback(async (g: Gen) => {
+    setSubmitting(true);
+    try {
+      const { generation } = await api<{ generation: Gen }>("/api/generate", { json: g.input });
+      prevStatus.current[generation.id] = "running";
+      upsert(generation);
+      setActiveId(generation.id);
+    } catch (e) {
+      fail(e);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [upsert, fail]);
+
+  const patchGen: Ctx["patchGen"] = useCallback(async (id, p) => {
+    try {
+      const { generation } = await api<{ generation: Gen }>(`/api/generations/${id}`, { method: "PATCH", json: p });
+      upsert(generation);
+    } catch (e) {
+      fail(e);
+    }
+  }, [upsert, fail]);
+
+  const deleteGen = useCallback(async (id: string) => {
+    try {
+      await api(`/api/generations/${id}`, { method: "DELETE" });
+      setGens((l) => l.filter((x) => x.id !== id));
+      setActiveId((a) => (a === id ? null : a));
+      refreshUsage();
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail, refreshUsage]);
+
+  const uploadFiles = useCallback(async (files: File[]) => {
+    if (!files.length || !draft) return;
+    const room = 16 - draft.refs.length;
+    if (room <= 0) return toast("You can use up to 16 reference images.", "error");
+    const fd = new FormData();
+    files.slice(0, room).forEach((f) => fd.append("files", f));
+    try {
+      const { assets: made } = await api<{ assets: Asset[] }>("/api/uploads", { form: fd });
+      setAssets((a) => [...made.reverse(), ...a]);
+      setDraftState((d) => (d ? { ...d, refs: [...d.refs, ...made.map((a) => ({ id: a.id, name: a.name, kind: "upload" as const }))].slice(0, 16) } : d));
+    } catch (e) {
+      fail(e);
+    }
+  }, [draft, fail, toast]);
+
+  const addBrandRef = useCallback(async () => {
+    try {
+      const { asset } = await api<{ asset: Asset }>("/api/uploads/brand", { method: "POST", json: {} });
+      setAssets((a) => (a.some((x) => x.id === asset.id) ? a : [asset, ...a]));
+      setDraftState((d) => (d && !d.refs.some((r) => r.id === asset.id) ? { ...d, refs: [...d.refs, { id: asset.id, name: "THE 97 logo", kind: "brand" as const }] } : d));
+      toast("Official 97 logo added as a reference.", "ok");
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail, toast]);
+
+  const removeAsset = useCallback(async (id: string) => {
+    try {
+      await api(`/api/uploads/${id}`, { method: "DELETE" });
+      setAssets((a) => a.filter((x) => x.id !== id));
+      setDraftState((d) => (d ? { ...d, refs: d.refs.filter((r) => r.id !== id) } : d));
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail]);
+
+  const updateSettings: Ctx["updateSettings"] = useCallback(async (p) => {
+    try {
+      const { settings: s } = await api<{ settings: Settings }>("/api/settings", { method: "PATCH", json: p });
+      setSettings(s);
+      refreshUsage();
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail, refreshUsage]);
+
+  const createProject = useCallback(async (name: string) => {
+    try {
+      const { project } = await api<{ project: Project }>("/api/projects", { json: { name } });
+      setProjects((p) => [...p, project]);
+      return project;
+    } catch (e) {
+      fail(e);
+      return null;
+    }
+  }, [fail]);
+  const renameProject = useCallback(async (id: string, name: string) => {
+    try {
+      const { project } = await api<{ project: Project }>(`/api/projects/${id}`, { method: "PATCH", json: { name } });
+      setProjects((p) => p.map((x) => (x.id === id ? project : x)));
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail]);
+  const deleteProject = useCallback(async (id: string) => {
+    try {
+      await api(`/api/projects/${id}`, { method: "DELETE" });
+      setProjects((p) => p.filter((x) => x.id !== id));
+      setGens((l) => l.map((g) => (g.input.projectId === id ? { ...g, input: { ...g.input, projectId: "proj_0000000000000000" } } : g)));
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail]);
+
+  const savePrompt = useCallback(async (text: string) => {
+    try {
+      const { prompt } = await api<{ prompt: SavedPrompt }>("/api/prompts", { json: { text } });
+      setPrompts((p) => [prompt, ...p]);
+      toast("Prompt saved to your presets.", "ok");
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail, toast]);
+  const deletePrompt = useCallback(async (id: string) => {
+    try {
+      await api(`/api/prompts/${id}`, { method: "DELETE" });
+      setPrompts((p) => p.filter((x) => x.id !== id));
+    } catch (e) {
+      fail(e);
+    }
+  }, [fail]);
+
+  const editImage: Ctx["editImage"] = useCallback((g, imageId) => {
+    setDraftState((d) => (d ? { ...d, prompt: "", refs: [{ id: imageId, name: "Image to edit", kind: "result" }], preserve: true, parentId: g.id, aspect: g.input.aspect, tier: g.input.tier, model: g.input.model, quality: g.input.quality, projectId: g.input.projectId, presetId: undefined } : d));
+    router.push("/studio");
+    toast("Describe the change — everything else will be preserved.");
+  }, [router, toast]);
+
+  const reuse: Ctx["reuse"] = useCallback((g) => {
+    const i = g.input;
+    setDraftState((d) => (d ? { ...d, prompt: i.prompt, aspect: i.aspect, tier: i.tier, model: i.model, quality: i.quality, complexity: i.complexity || "default", n: i.n, format: i.format, transparent: i.transparent, projectId: i.projectId, presetId: i.presetId, preserve: i.preserve, parentId: i.parentId, refs: i.refs.map((id) => ({ id, name: id.startsWith("img_") ? "Earlier result" : "Reference", kind: id.startsWith("img_") ? ("result" as const) : ("upload" as const) })) } : d));
+    router.push("/studio");
+  }, [router]);
+
+  const logout = useCallback(async () => {
+    await api("/api/auth/logout", { method: "POST", json: {} }).catch(() => {});
+    location.href = "/login";
+  }, []);
+
+  if (!ready || !settings || !draft) return <>{ready ? <div className="boot-fail">Could not load your studio. Refresh to try again.</div> : null}</>;
+
+  return (
+    <C.Provider value={{ ready, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, setActiveId, toasts, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout }}>
+      {children}
+    </C.Provider>
+  );
+}
