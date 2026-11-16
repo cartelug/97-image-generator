@@ -142,7 +142,7 @@ export function Composer() {
             <span><b>Upload images</b> or drop them here</span>
             <em>PNG · JPEG · WebP · paste works too</em>
           </button>
-          <input ref={fileIn} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={(e) => { uploadFiles(Array.from(e.target.files || [])); e.target.value = ""; }} />
+          <input ref={fileIn} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={(e) => { const el = e.target; const picked = Array.from(el.files || []); uploadFiles(picked).finally(() => { el.value = ""; }); }} />
         </div>
         <div className="row gap8 wrap">
           <button className="btn quiet sm" onClick={addBrandRef} title="Adds the official THE 97 logo so the model uses the real artwork"><Stamp size={14} /> Add official 97 logo</button>
