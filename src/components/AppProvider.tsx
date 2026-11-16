@@ -82,6 +82,30 @@ export const useApp = () => {
 const DRAFT_KEY = "97ig.draft.v1";
 const emptyDraft = (s: Settings): Draft => ({ prompt: "", refs: [], aspect: s.aspect, tier: s.tier, model: s.model, quality: s.quality, complexity: s.complexity, n: 1, format: s.format, transparent: false, projectId: "proj_0000000000000000", preserve: false });
 
+/** Make an in-memory copy of a picked image, downscaled to ≤2048px so phones upload fast. */
+async function prepareUpload(file: File): Promise<File> {
+  const name = file.name || "reference.jpg";
+  try {
+    if (typeof createImageBitmap === "function") {
+      const bmp = await createImageBitmap(file);
+      const scale = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
+      if (scale < 1 || file.size > 4 * 1024 * 1024) {
+        const c = document.createElement("canvas");
+        c.width = Math.round(bmp.width * scale);
+        c.height = Math.round(bmp.height * scale);
+        c.getContext("2d")!.drawImage(bmp, 0, 0, c.width, c.height);
+        bmp.close?.();
+        const png = file.type === "image/png" || file.type === "image/webp";
+        const blob = await new Promise<Blob | null>((r) => c.toBlob(r, png ? "image/png" : "image/jpeg", 0.92));
+        if (blob) return new File([blob], name.replace(/\.[^.]+$/, "") + (png ? ".png" : ".jpg"), { type: blob.type });
+      }
+      bmp.close?.();
+    }
+  } catch {}
+  const buf = await file.arrayBuffer();
+  return new File([buf], name, { type: file.type || "image/jpeg" });
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
@@ -257,8 +281,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const room = 16 - draft.refs.length;
     if (room <= 0) return toast("You can use up to 16 reference images.", "error");
     const fd = new FormData();
-    files.slice(0, room).forEach((f) => fd.append("files", f));
     try {
+      // Copy each photo into memory first (and shrink big phone photos). iPhone Safari
+      // fails the upload ("Load failed") if it still points at the original picked file.
+      const ready = await Promise.all(files.slice(0, room).map(prepareUpload));
+      ready.forEach((f) => fd.append("files", f, f.name));
       const { assets: made } = await api<{ assets: Asset[] }>("/api/uploads", { form: fd });
       setAssets((a) => [...made.reverse(), ...a]);
       setDraftState((d) => (d ? { ...d, refs: [...d.refs, ...made.map((a) => ({ id: a.id, name: a.name, kind: "upload" as const }))].slice(0, 16) } : d));
