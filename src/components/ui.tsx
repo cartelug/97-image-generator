@@ -32,8 +32,17 @@ export function SmartImg({ id, alt, w, h, className = "", eager = false }: { id:
 }
 
 export function Thumb({ id, alt = "", className = "" }: { id: string; alt?: string; className?: string }) {
-  // eslint-disable-next-line @next/next/no-img-element
-  return <img className={className} src={imgUrl(id, { thumb: true })} alt={alt} loading="lazy" decoding="async" draggable={false} />;
+  // Fades in once decoded, so grids never "pop" half-loaded. Cached images are marked ready before first paint.
+  const [ok, setOk] = useState(false);
+  const ref = useRef<HTMLImageElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    setOk(!!(el?.complete && el.naturalWidth));
+  }, [id]);
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img ref={ref} className={`thumb-img${ok ? " on" : ""} ${className}`} src={imgUrl(id, { thumb: true })} alt={alt} loading="lazy" decoding="async" draggable={false} onLoad={() => setOk(true)} onError={() => setOk(true)} />
+  );
 }
 
 export function Segmented<T extends string>({ value, options, onChange, label, small = false }: { value: T; options: { id: T; label: string; hint?: string }[]; onChange: (v: T) => void; label: string; small?: boolean }) {

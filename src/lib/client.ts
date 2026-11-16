@@ -1,4 +1,5 @@
 "use client";
+import { flushSync } from "react-dom";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -35,3 +36,25 @@ export const dlUrl = (id: string, format = "original", wm = false) => `/api/imag
 
 export const fmtTime = (ms?: number) => (ms == null ? "" : ms < 1000 ? "<1s" : ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`);
 export const fmtDate = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+/**
+ * Run a state change inside a View Transition so elements that share a `view-transition-name`
+ * fly from where they were to where they land (e.g. an upload moving between the tray and the
+ * references). Browsers without the API, and people who prefer reduced motion, just get the update.
+ */
+export function morph(update: () => void) {
+  const d = document as Document & { startViewTransition?: (cb: () => void) => unknown };
+  const reduce = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!d.startViewTransition || reduce || document.hidden) return update();
+  try {
+    const t = d.startViewTransition(() => {
+      flushSync(update);
+    }) as { ready?: Promise<unknown>; finished?: Promise<unknown>; updateCallbackDone?: Promise<unknown> } | undefined;
+    // A newer transition (rapid taps) skips the older one on purpose; that's not an error.
+    t?.ready?.catch(() => {});
+    t?.finished?.catch(() => {});
+    t?.updateCallbackDone?.catch(() => {});
+  } catch {
+    update();
+  }
+}

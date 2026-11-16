@@ -1,14 +1,14 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, BookmarkPlus, ChevronDown, Loader2, Plus, Stamp, Undo2, Upload, WandSparkles, X, Check, ArrowRight, Trash2, Info, RotateCw, TriangleAlert } from "lucide-react";
-import { useApp, type PendingUpload } from "../AppProvider";
+import { Bookmark, BookmarkPlus, ChevronDown, Loader2, Plus, Stamp, Undo2, Upload, WandSparkles, X, Check, ArrowRight, Trash2, Info, RotateCw, TriangleAlert, History as HistoryIcon } from "lucide-react";
+import { useApp, useUploads, type PendingUpload, type RefItem } from "../AppProvider";
 import { Segmented, Thumb, Toggle, useOutside } from "../ui";
 import { PRESETS } from "@/lib/presets";
 import { PRESET_ICONS, applyPreset } from "./preset";
 import { ASPECTS, TIERS, sizeFor } from "@/lib/sizes";
 import { COMPLEXITIES, FORMATS, MODELS, QUALITIES } from "@/lib/models";
 import { estimateCost, fmtUsd } from "@/lib/pricing";
-import { api, ApiError } from "@/lib/client";
+import { api, ApiError, morph } from "@/lib/client";
 
 const STAGE_LABEL: Record<PendingUpload["stage"], string> = { queued: "Waiting", compressing: "Optimising", uploading: "Uploading", processing: "Processing", done: "Ready", error: "Failed" };
 
@@ -45,7 +45,8 @@ function UploadTile({ u, onRetry, onRemove }: { u: PendingUpload; onRetry: () =>
 }
 
 export function Composer() {
-  const { pending, retryUpload, dismissUpload, draft, setDraft, settings, usage, demo, submit, submitting, uploadFiles, addBrandRef, removeAsset, assets, projects, createProject, prompts, savePrompt, deletePrompt, toast, updateSettings, gens } = useApp();
+  const { draft, setDraft, settings, usage, demo, submit, submitting, uploadFiles, addBrandRef, removeAsset, assets, projects, createProject, prompts, savePrompt, deletePrompt, toast, updateSettings, gens } = useApp();
+  const { pending, retryUpload, dismissUpload } = useUploads();
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileIn = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
@@ -70,8 +71,40 @@ export function Composer() {
   const over = !demo && b?.enforce && left != null && est.usd > left;
   const warn = !demo && b && left != null && b.monthlyUsd > 0 && usage!.spent / b.monthlyUsd >= b.warnPct / 100;
   const editing = !!draft.parentId && draft.refs.length > 0;
-  const recentAssets = assets.filter((a) => !draft.refs.some((r) => r.id === a.id)).slice(0, 8);
+  // "Previously uploaded" tray: everything you've uploaded (plus references you just took off that weren't uploads)
+  // that isn't currently attached. Tapping one flies it into the references; removing a reference flies it back.
+  const [shelf, setShelf] = useState<RefItem[]>([]);
+  const [arm, setArm] = useState<string | null>(null);
+  useEffect(() => {
+    if (!arm) return;
+    const t = setTimeout(() => setArm(null), 2600);
+    return () => clearTimeout(t);
+  }, [arm]);
+  const tray = useMemo(() => {
+    const attached = new Set(draft.refs.map((r) => r.id));
+    const fromAssets: RefItem[] = assets.map((a) => ({ id: a.id, name: a.name, kind: a.brand ? "brand" : "upload" }));
+    const known = new Set(fromAssets.map((x) => x.id));
+    return [...shelf.filter((x) => !known.has(x.id)), ...fromAssets].filter((x) => !attached.has(x.id));
+  }, [assets, shelf, draft.refs]);
+  const assetIds = useMemo(() => new Set(assets.map((a) => a.id)), [assets]);
+  const vtn = (id: string) => `v-${id}`;
   const running = gens.filter((g) => g.status === "running").length;
+  const room = 16 - draft.refs.length - pending.filter((p) => p.stage !== "error").length;
+  function addRefs(items: RefItem[]) {
+    const take = items.slice(0, Math.max(0, room));
+    if (!take.length) return toast("You can use up to 16 reference images.", "error");
+    if (take.length < items.length) toast(`Added ${take.length} — the limit is 16 references.`);
+    try {
+      navigator.vibrate?.(8);
+    } catch {}
+    morph(() => setDraft((d) => ({ refs: [...d.refs, ...take.filter((t) => !d.refs.some((r) => r.id === t.id))].slice(0, 16) })));
+  }
+  function removeRef(r: RefItem) {
+    morph(() => {
+      if (!assetIds.has(r.id)) setShelf((s) => [r, ...s.filter((x) => x.id !== r.id)].slice(0, 8));
+      setDraft((d) => ({ refs: d.refs.filter((x) => x.id !== r.id), ...(d.refs.length === 1 ? { parentId: undefined, preserve: false } : {}) }));
+    });
+  }
   const moving = pending.filter((p) => p.stage !== "error" && p.stage !== "done");
   const failed = pending.filter((p) => p.stage === "error").length;
   const upPct = moving.length ? Math.round((moving.reduce((s, p) => s + (p.stage === "uploading" ? p.pct : p.stage === "processing" ? 1 : 0), 0) / moving.length) * 100) : 0;
@@ -175,11 +208,11 @@ export function Composer() {
           {(draft.refs.length > 0 || pending.length > 0) && (
             <ul className="refs">
               {draft.refs.map((r, i) => (
-                <li key={r.id}>
+                <li key={r.id} style={{ viewTransitionName: vtn(r.id) }}>
                   <Thumb id={r.id} alt={r.name} />
                   {i === 0 && editing && <span className="ref-badge">Editing</span>}
                   {r.kind === "brand" && <span className="ref-badge brand">97</span>}
-                  <button className="ref-x" aria-label={`Remove ${r.name}`} onClick={() => { setDraft({ refs: draft.refs.filter((x) => x.id !== r.id), ...(draft.refs.length === 1 ? { parentId: undefined, preserve: false } : {}) }); }}><X size={12} /></button>
+                  <button className="ref-x" aria-label={`Remove ${r.name}`} onClick={() => removeRef(r)}><X size={12} /></button>
                 </li>
               ))}
               {pending.map((u) => <UploadTile key={u.key} u={u} onRetry={() => retryUpload(u.key)} onRemove={() => dismissUpload(u.key)} />)}
@@ -194,13 +227,31 @@ export function Composer() {
         </div>
         <div className="row gap8 wrap">
           <button className="btn quiet sm" onClick={addBrandRef} title="Adds the official THE 97 logo so the model uses the real artwork"><Stamp size={14} /> Add official 97 logo</button>
-          {recentAssets.slice(0, 5).map((a) => (
-            <button key={a.id} className="mini" title={`Reuse ${a.name}`} onClick={() => setDraft({ refs: [...draft.refs, { id: a.id, name: a.name, kind: a.brand ? "brand" : "upload" }] })}>
-              <Thumb id={a.id} alt={a.name} />
-              <span className="mini-x" role="button" aria-label={`Delete ${a.name} from library`} onClick={(e) => { e.stopPropagation(); removeAsset(a.id); }}><X size={10} /></span>
-            </button>
-          ))}
         </div>
+        {tray.length > 0 && (
+          <div className="tray" role="group" aria-label="Previously uploaded images">
+            <div className="tray-head">
+              <span className="tray-title"><HistoryIcon size={13} /> Previously uploaded <em className="mono">{tray.length}</em></span>
+              {tray.length > 1 && room > 0 && <button type="button" className="tray-all" onClick={() => addRefs(tray)}><Plus size={13} /> Add all</button>}
+            </div>
+            <ul className="tray-strip">
+              {tray.map((t) => (
+                <li key={t.id} className="tray-item" style={{ viewTransitionName: vtn(t.id) }}>
+                  <button type="button" className="tray-add" onClick={() => addRefs([t])} disabled={room <= 0} aria-label={`Add ${t.name} to references`} title={room <= 0 ? "16 references is the maximum" : `Add ${t.name}`}>
+                    <Thumb id={t.id} alt="" />
+                    <span className="tray-plus" aria-hidden><Plus size={18} strokeWidth={2.4} /></span>
+                    {t.kind === "brand" && <span className="ref-badge brand">97</span>}
+                  </button>
+                  {assetIds.has(t.id) && (
+                    <button type="button" className={`tray-del${arm === t.id ? " arm" : ""}`} aria-label={arm === t.id ? `Confirm: delete ${t.name} permanently` : `Delete ${t.name} from your uploads`} onClick={() => { if (arm === t.id) { setArm(null); removeAsset(t.id); } else setArm(t.id); }}>
+                      {arm === t.id ? <Check size={11} strokeWidth={3} /> : <X size={11} />}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {draft.refs.length > 0 && (
           <Toggle checked={draft.preserve} onChange={(v) => setDraft({ preserve: v })} label="Preserve everything else" hint="Only change what you describe; keep subject, layout, colours and text" />
         )}

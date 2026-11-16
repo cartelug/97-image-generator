@@ -38,10 +38,6 @@ export type Toast = { id: number; msg: string; kind: "info" | "ok" | "error"; ou
 export type PendingUpload = { key: string; name: string; preview: string; stage: "queued" | "compressing" | "uploading" | "processing" | "done" | "error"; pct: number; error?: string };
 
 type Ctx = {
-  pending: PendingUpload[];
-  retryUpload: (key: string) => void;
-  dismissUpload: (key: string) => void;
-  dismissToast: (id: number) => void;
   ready: boolean;
   me: Me | null;
   demo: boolean;
@@ -52,10 +48,9 @@ type Ctx = {
   gens: Gen[];
   usage: Usage | null;
   draft: Draft;
-  setDraft: (p: Partial<Draft>) => void;
+  setDraft: (p: Partial<Draft> | ((d: Draft) => Partial<Draft>)) => void;
   activeId: string | null;
   setActiveId: (id: string | null) => void;
-  toasts: Toast[];
   toast: (msg: string, kind?: Toast["kind"]) => void;
   submit: (override?: Partial<GenInput>) => Promise<Gen | null>;
   submitting: boolean;
@@ -79,6 +74,23 @@ type Ctx = {
 };
 
 const C = createContext<Ctx | null>(null);
+
+// Upload progress and toasts change many times a second / on every message. They live in their own
+// contexts so Stage, History, Gallery and the rest of the app don't re-render for them.
+type UploadsValue = { pending: PendingUpload[]; retryUpload: (key: string) => void; dismissUpload: (key: string) => void };
+type ToastsValue = { toasts: Toast[]; dismissToast: (id: number) => void };
+const UploadsCtx = createContext<UploadsValue | null>(null);
+const ToastsCtx = createContext<ToastsValue | null>(null);
+export const useUploads = () => {
+  const v = useContext(UploadsCtx);
+  if (!v) throw new Error("useUploads outside provider");
+  return v;
+};
+export const useToasts = () => {
+  const v = useContext(ToastsCtx);
+  if (!v) throw new Error("useToasts outside provider");
+  return v;
+};
 export const useApp = () => {
   const v = useContext(C);
   if (!v) throw new Error("useApp outside provider");
@@ -150,6 +162,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [usage, setUsage] = useState<Usage | null>(null);
   const [draft, setDraftState] = useState<Draft | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const activeRef = useRef<string | null>(null);
+  activeRef.current = activeId;
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const toastId = useRef(0);
@@ -216,7 +230,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(t);
   }, [draft]);
 
-  const setDraft = useCallback((p: Partial<Draft>) => setDraftState((d) => (d ? { ...d, ...p } : d)), []);
+  const setDraft = useCallback((p: Partial<Draft> | ((d: Draft) => Partial<Draft>)) => setDraftState((d) => (d ? { ...d, ...(typeof p === "function" ? p(d) : p) } : d)), []);
 
   const refreshUsage = useCallback(async () => {
     try {
@@ -311,22 +325,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [upsert, fail]);
 
+  // Optimistic: the UI changes instantly; if the server says no, we put it back and explain.
+  const gensRef = useRef<Gen[]>([]);
+  gensRef.current = gens;
+
   const patchGen: Ctx["patchGen"] = useCallback(async (id, p) => {
+    const before = gensRef.current.find((x) => x.id === id);
+    if (before) setGens((l) => l.map((x) => (x.id === id ? { ...x, ...(typeof p.favorite === "boolean" ? { favorite: p.favorite } : {}), ...(p.projectId ? { input: { ...x.input, projectId: p.projectId } } : {}) } : x)));
     try {
       const { generation } = await api<{ generation: Gen }>(`/api/generations/${id}`, { method: "PATCH", json: p });
       upsert(generation);
     } catch (e) {
+      if (before) setGens((l) => l.map((x) => (x.id === id ? before : x)));
       fail(e);
     }
   }, [upsert, fail]);
 
   const deleteGen = useCallback(async (id: string) => {
+    const before = gensRef.current.find((x) => x.id === id);
+    const wasActive = activeRef.current === id;
+    setGens((l) => l.filter((x) => x.id !== id));
+    setActiveId((a) => (a === id ? null : a));
     try {
       await api(`/api/generations/${id}`, { method: "DELETE" });
-      setGens((l) => l.filter((x) => x.id !== id));
-      setActiveId((a) => (a === id ? null : a));
       refreshUsage();
     } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return; // already gone
+      if (before) {
+        setGens((l) => (l.some((x) => x.id === id) ? l : [...l, before].sort((a, b) => b.createdAt.localeCompare(a.createdAt))));
+        if (wasActive) setActiveId(id);
+      }
       fail(e);
     }
   }, [fail, refreshUsage]);
@@ -356,7 +384,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         readyFiles.current.set(key, f);
       }
       patchPending(key, { stage: "uploading", pct: 0, error: undefined });
-      const made = await xhrUpload(f, (p) => patchPending(key, { pct: p, stage: p >= 1 ? "processing" : "uploading" }));
+      let lastP = -1;
+      const made = await xhrUpload(f, (p) => {
+        if (p < 1 && p - lastP < 0.02) return; // 2% steps only: smooth enough, far fewer renders
+        lastP = p;
+        patchPending(key, { pct: p, stage: p >= 1 ? "processing" : "uploading" });
+      });
       const a = made[0];
       patchPending(key, { stage: "done", pct: 1 });
       await new Promise((r) => setTimeout(r, 520)); // let the ✓ land before the tile swaps
@@ -399,12 +432,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fail, toast]);
 
+  const assetsRef = useRef<Asset[]>([]);
+  assetsRef.current = assets;
   const removeAsset = useCallback(async (id: string) => {
+    const before = assetsRef.current.find((x) => x.id === id);
+    setAssets((a) => a.filter((x) => x.id !== id));
+    setDraftState((d) => (d ? { ...d, refs: d.refs.filter((r) => r.id !== id) } : d));
     try {
       await api(`/api/uploads/${id}`, { method: "DELETE" });
-      setAssets((a) => a.filter((x) => x.id !== id));
-      setDraftState((d) => (d ? { ...d, refs: d.refs.filter((r) => r.id !== id) } : d));
     } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return;
+      if (before) setAssets((a) => (a.some((x) => x.id === id) ? a : [before, ...a]));
       fail(e);
     }
   }, [fail]);
@@ -482,11 +520,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     location.href = "/login";
   }, []);
 
-  if (!ready || !settings || !draft) return <>{ready ? <div className="boot-fail">Could not load your studio. Refresh to try again.</div> : null}</>;
+  const value = useMemo(
+    () => ({ ready, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, setActiveId, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout }) as Ctx,
+    [ready, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout],
+  );
+  const uploadsValue = useMemo(() => ({ pending, retryUpload, dismissUpload: dropPending }), [pending, retryUpload, dropPending]);
+  const toastsValue = useMemo(() => ({ toasts, dismissToast }), [toasts, dismissToast]);
+
+  if (!ready) return <BootSkeleton />;
+  if (!settings || !draft) return <div className="boot-fail">Could not load your studio. Refresh to try again.</div>;
 
   return (
-    <C.Provider value={{ pending, retryUpload, dismissUpload: dropPending, dismissToast, ready, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, setActiveId, toasts, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout }}>
-      {children}
+    <C.Provider value={value}>
+      <UploadsCtx.Provider value={uploadsValue}>
+        <ToastsCtx.Provider value={toastsValue}>{children}</ToastsCtx.Provider>
+      </UploadsCtx.Provider>
     </C.Provider>
+  );
+}
+
+/** Shown while the first data load is in flight on repeat visits (the logo preloader covers first visits). */
+function BootSkeleton() {
+  return (
+    <div className="boot-skel" role="status" aria-label="Loading your studio">
+      <div className="bs-top"><i className="bs-dot" /><i className="bs-line w1" /></div>
+      <div className="bs-body">
+        <div className="bs-card">
+          <i className="bs-line w2" /><i className="bs-box" /><i className="bs-line w3" /><i className="bs-box short" /><i className="bs-btn" />
+        </div>
+        <div className="bs-card wide"><i className="bs-box tall" /></div>
+      </div>
+    </div>
   );
 }

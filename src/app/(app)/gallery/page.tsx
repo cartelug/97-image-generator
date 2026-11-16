@@ -1,7 +1,7 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Archive, Check, Columns2, FolderPlus, Pencil, Search, Star, Trash2, X } from "lucide-react";
+import { Archive, Check, Columns2, FolderPlus, Loader2, Pencil, Search, Star, Trash2, X } from "lucide-react";
 import { useApp } from "@/components/AppProvider";
 import { Thumb } from "@/components/ui";
 import { Lightbox } from "@/components/Lightbox";
@@ -23,6 +23,10 @@ export default function GalleryPage() {
   const [wm, setWm] = useState(settings.watermark.enabled);
   const [fmt, setFmt] = useState("original");
   const [confirmDel, setConfirmDel] = useState(false);
+  // Render tiles in chunks as you scroll: a big library opens instantly instead of mounting hundreds of images.
+  const PAGE = 36;
+  const [limit, setLimit] = useState(PAGE);
+  const sentinel = useRef<HTMLDivElement>(null);
 
   const done = useMemo(() => gens.filter((g) => g.status === "done" && g.images.length), [gens]);
   const counts = useMemo(() => {
@@ -41,6 +45,17 @@ export default function GalleryPage() {
       .filter((g) => !ql || g.input.prompt.toLowerCase().includes(ql))
       .flatMap((g) => g.images.map((img) => ({ gen: g, img })));
   }, [done, proj, q]);
+
+  useEffect(() => setLimit(PAGE), [proj, q]);
+  const shown = useMemo(() => tiles.slice(0, limit), [tiles, limit]);
+  const more = tiles.length > limit;
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || !more) return;
+    const io = new IntersectionObserver((es) => es[0]?.isIntersecting && setLimit((l) => l + PAGE), { rootMargin: "900px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [more, limit]);
 
   const byImg = (id: string) => tiles.find((t) => t.img.id === id);
   const toggle = (id: string) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -103,8 +118,9 @@ export default function GalleryPage() {
           {!done.length && <button className="btn primary" onClick={() => router.push("/studio")}>Open Studio</button>}
         </div>
       ) : (
+        <>
         <div className="grid">
-          {tiles.map((t) => {
+          {shown.map((t) => {
             const on = sel.includes(t.img.id);
             return (
               <div key={t.img.id} className={`tile${on ? " sel" : ""}`}>
@@ -120,6 +136,8 @@ export default function GalleryPage() {
             );
           })}
         </div>
+        {more && <div ref={sentinel} className="grid-more" aria-hidden><Loader2 className="spin" size={18} /></div>}
+        </>
       )}
 
       {selecting && (

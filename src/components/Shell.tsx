@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { CircleUser, Images, SlidersHorizontal, Sparkles, Columns2, Check, TriangleAlert, Info } from "lucide-react";
 import { Logo } from "./Logo";
-import { useApp } from "./AppProvider";
+import { useApp, useToasts } from "./AppProvider";
 import { fmtUsd } from "@/lib/pricing";
 
 const NAV = [
@@ -16,7 +16,8 @@ const NAV = [
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  const { demo, usage, toasts, me, dismissToast } = useApp();
+  const { demo, usage, me } = useApp();
+  const { toasts, dismissToast } = useToasts();
   const b = usage?.budget;
   const pct = b && b.monthlyUsd > 0 && usage ? usage.spent / b.monthlyUsd : 0;
   const navIdx = NAV.findIndex((n) => path.startsWith(n.href));
