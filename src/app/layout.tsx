@@ -3,6 +3,7 @@ import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import "./globals.css";
 import "./polish.css";
+import "./chat.css";
 import { Preloader } from "@/components/Preloader";
 
 export const metadata: Metadata = {

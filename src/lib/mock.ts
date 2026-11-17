@@ -34,7 +34,7 @@ export async function mockImages(o: { prompt: string; w: number; h: number; n: n
   });
   const out: Buffer[] = [];
   for (let i = 0; i < o.n; i++) {
-    const hash = crypto.createHash("md5").update(o.prompt + i).digest();
+    const hash = crypto.createHash("md5").update(o.prompt + i + crypto.randomBytes(4).toString("hex")).digest();
     const hue = (hash[0] / 255) * 360;
     const hue2 = (hue + 40 + hash[1] / 6) % 360;
     const fs = Math.round(Math.min(w, h) * 0.034);

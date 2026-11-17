@@ -2,7 +2,7 @@
 import { useApp } from "@/components/AppProvider";
 import { Segmented, Toggle } from "@/components/ui";
 import { Logo } from "@/components/Logo";
-import { COMPLEXITIES, FORMATS, MODELS, QUALITIES } from "@/lib/models";
+import { COMPLEXITIES, EFFORTS, FORMATS, MODELS, PROMPT_MODELS, QUALITIES } from "@/lib/models";
 import { ASPECTS, TIERS } from "@/lib/sizes";
 import type { Settings } from "@/lib/types";
 
@@ -18,6 +18,13 @@ export default function SettingsPage() {
         <div><h1>Settings</h1><p className="muted">Defaults for every new image, and branded exports.</p></div>
       </div>
       <div className="cards">
+        <section className="card">
+          <div className="eyebrow">Chat &amp; prompt model</div>
+          <div className="field-row"><label>Model</label><Segmented small label="Prompt model" value={s.promptModel} options={[...PROMPT_MODELS.map((m) => ({ id: m.id as string, label: m.name })), ...(PROMPT_MODELS.some((m) => m.id === s.promptModel) ? [] : [{ id: s.promptModel, label: s.promptModel }])]} onChange={(v) => set({ promptModel: v })} /></div>
+          <div className="field-row"><label>Effort</label><Segmented small label="Thinking effort" value={s.effort} options={EFFORTS.map((e) => ({ id: e.id, label: e.label, hint: e.blurb }))} onChange={(v) => set({ effort: v })} /></div>
+          <p className="muted tiny">GPT-6.1 Sol reads your whole chat and every image, decides how many images to make, and writes the image prompts. Higher effort thinks longer and is more accurate on text, counts and layouts. It also powers Enhance in the Studio.</p>
+        </section>
+
         <section className="card">
           <div className="eyebrow">Generation defaults</div>
           <div className="field-row"><label>Model</label><Segmented small label="Default model" value={s.model} options={MODELS.map((m) => ({ id: m.id, label: m.name }))} onChange={(v) => set({ model: v })} /></div>

@@ -20,7 +20,7 @@ export type ImageCall = {
   signal: AbortSignal;
 };
 
-function friendly(status: number, body: { error?: { message?: string; code?: string } } | null): string {
+export function friendly(status: number, body: { error?: { message?: string; code?: string } } | null): string {
   const msg = body?.error?.message || "";
   const code = body?.error?.code || "";
   if (status === 401) return "OpenAI rejected the API key. Check OPENAI_API_KEY on the server.";

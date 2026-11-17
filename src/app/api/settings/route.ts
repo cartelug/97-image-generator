@@ -1,6 +1,7 @@
 import { route, ok, body } from "@/lib/http";
 import { getDB, save } from "@/lib/store";
-import { MODELS, QUALITIES } from "@/lib/models";
+import { MODELS, QUALITIES, PROMPT_MODELS, EFFORTS } from "@/lib/models";
+import { promptModel } from "@/lib/config";
 import { ASPECTS } from "@/lib/sizes";
 import type { Settings } from "@/lib/types";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,8 @@ export const PATCH = route(async (req, _c, user) => {
   const db = getDB(user.uid);
   const s = db.settings;
   if (b.model && MODELS.some((m) => m.id === b.model)) s.model = b.model;
+  if (b.promptModel && (PROMPT_MODELS.some((m) => m.id === b.promptModel) || b.promptModel === promptModel())) s.promptModel = b.promptModel;
+  if (b.effort && EFFORTS.some((e) => e.id === b.effort)) s.effort = b.effort;
   if (b.quality && QUALITIES.some((q) => q.id === b.quality)) s.quality = b.quality;
   if (b.complexity && ["default", "low", "medium", "high"].includes(b.complexity)) s.complexity = b.complexity;
   if (b.aspect && ASPECTS.some((a) => a.id === b.aspect)) s.aspect = b.aspect;

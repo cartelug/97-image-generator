@@ -1,12 +1,13 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CircleUser, Images, SlidersHorizontal, Sparkles, Columns2, Check, TriangleAlert, Info } from "lucide-react";
+import { CircleUser, Images, SlidersHorizontal, Sparkles, Columns2, Check, TriangleAlert, Info, MessageCircle } from "lucide-react";
 import { Logo } from "./Logo";
 import { useApp, useToasts } from "./AppProvider";
 import { fmtUsd } from "@/lib/pricing";
 
 const NAV = [
+  { href: "/chat", label: "Chat", Icon: MessageCircle },
   { href: "/studio", label: "Studio", Icon: Sparkles },
   { href: "/gallery", label: "Gallery", Icon: Images },
   { href: "/compare", label: "Compare", Icon: Columns2 },
@@ -24,10 +25,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="shell">
       <nav className="rail" aria-label="Main">
-        <Link href="/studio" className="rail-brand" aria-label="97 Image Generator — Studio">
+        <Link href="/chat" className="rail-brand" aria-label="97 Image Generator — Chat">
           <Logo height={30} />
         </Link>
-        <div className="rail-links" style={{ ["--i" as string]: Math.max(0, navIdx) }}>
+        <div className="rail-links" style={{ ["--i" as string]: Math.max(0, navIdx), ["--n" as string]: NAV.length }}>
           {navIdx >= 0 && <span className="rail-ind" aria-hidden />}
           {NAV.map(({ href, label, Icon }) => (
             <Link key={href} href={href} className={`rail-link${path.startsWith(href) ? " on" : ""}`} aria-current={path.startsWith(href) ? "page" : undefined}>
@@ -42,7 +43,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </nav>
       <div className="main">
         <header className="topbar">
-          <Link href="/studio" className="top-logo" aria-label="Studio"><Logo height={22} /></Link>
+          <Link href="/chat" className="top-logo" aria-label="Chat"><Logo height={22} /></Link>
           <div className="top-brand">
             <b>97 IMAGE GENERATOR</b>
             <span>THE 97 WORLD</span>

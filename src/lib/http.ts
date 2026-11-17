@@ -51,7 +51,7 @@ export async function body<T = Record<string, unknown>>(req: NextRequest): Promi
   }
 }
 
-export const ID_RE = /^(gen|img|ref|proj|prm)_[a-f0-9]{16}$/;
+export const ID_RE = /^(gen|img|ref|proj|prm|thr|msg)_[a-f0-9]{16}$/;
 export function safeId(id: string, prefix?: string) {
   if (!ID_RE.test(id) || (prefix && !id.startsWith(prefix + "_"))) throw new HttpError(400, "Invalid id.");
   return id;

@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { dataDir, defaultBudget } from "./config";
-import { DEFAULT_MODEL } from "./models";
+import { dataDir, defaultBudget, promptModel } from "./config";
+import { DEFAULT_MODEL, DEFAULT_EFFORT } from "./models";
 import type { DB, Settings } from "./types";
 
 type Entry = { db: DB; chain: Promise<void>; timer?: NodeJS.Timeout };
@@ -18,6 +18,8 @@ export const DEFAULT_PROJECT = "proj_0000000000000000";
 
 export function defaultSettings(): Settings {
   return {
+    promptModel: promptModel(),
+    effort: DEFAULT_EFFORT,
     model: DEFAULT_MODEL,
     quality: "high",
     complexity: "default",
@@ -33,6 +35,7 @@ function fresh(): DB {
   return {
     version: 1,
     projects: [{ id: DEFAULT_PROJECT, name: "Unsorted", color: "#8b8b95", createdAt: new Date().toISOString() }],
+    threads: [],
     generations: [],
     assets: [],
     prompts: [],
@@ -58,6 +61,16 @@ export function getDB(uid: string): DB {
     if (gen.status === "running") {
       gen.status = "error";
       gen.error = "The server restarted while this image was rendering. Press Retry.";
+    }
+  }
+  db.threads ||= [];
+  for (const t of db.threads) {
+    for (const m of t.messages) {
+      if (m.role === "assistant" && (m.status === "thinking" || m.status === "working")) {
+        m.status = "error";
+        m.error = "The server restarted while this was in progress. Press Retry.";
+        for (const it of m.items || []) if (it.status === "pending" || it.status === "running") it.status = "error";
+      }
     }
   }
   e = { db, chain: Promise.resolve() };

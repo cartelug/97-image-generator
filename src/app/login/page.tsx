@@ -19,7 +19,7 @@ function Form() {
     try {
       await api("/api/auth/login", { json: { email, password } });
       const next = sp.get("next");
-      location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/studio";
+      location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/chat";
     } catch (e2) {
       setErr(e2 instanceof ApiError ? e2.message : "Could not sign in.");
       setBusy(false);

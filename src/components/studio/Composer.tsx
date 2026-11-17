@@ -13,7 +13,7 @@ import { api, ApiError, morph } from "@/lib/client";
 const STAGE_LABEL: Record<PendingUpload["stage"], string> = { queued: "Waiting", compressing: "Optimising", uploading: "Uploading", processing: "Processing", done: "Ready", error: "Failed" };
 
 /** One reference on its way up: local preview + a ring that tracks the real bytes sent. */
-function UploadTile({ u, onRetry, onRemove }: { u: PendingUpload; onRetry: () => void; onRemove: () => void }) {
+export function UploadTile({ u, onRetry, onRemove }: { u: PendingUpload; onRetry: () => void; onRemove: () => void }) {
   const C = 2 * Math.PI * 17;
   const pct = u.stage === "uploading" ? u.pct : u.stage === "processing" || u.stage === "done" ? 1 : 0;
   const spinning = u.stage === "queued" || u.stage === "compressing" || u.stage === "processing";
@@ -46,7 +46,8 @@ function UploadTile({ u, onRetry, onRemove }: { u: PendingUpload; onRetry: () =>
 
 export function Composer() {
   const { draft, setDraft, settings, usage, demo, submit, submitting, uploadFiles, addBrandRef, removeAsset, assets, projects, createProject, prompts, savePrompt, deletePrompt, toast, updateSettings, gens } = useApp();
-  const { pending, retryUpload, dismissUpload } = useUploads();
+  const { pending: allPending, retryUpload, dismissUpload } = useUploads();
+  const pending = useMemo(() => allPending.filter((p) => p.dest === "draft"), [allPending]);
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileIn = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);

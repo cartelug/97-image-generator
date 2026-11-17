@@ -36,9 +36,14 @@ function clean(uid: string, raw: Partial<GenInput>): GenInput {
 }
 
 export function createGeneration(uid: string, raw: Partial<GenInput>): Gen {
+  return startGeneration(uid, raw).gen;
+}
+
+/** Like createGeneration, but also hands back a promise that settles when the render finishes (chat batches wait on it). */
+export function startGeneration(uid: string, raw: Partial<GenInput>, opts: { skipCap?: boolean; threadId?: string; msgId?: string } = {}): { gen: Gen; done: Promise<void> } {
   const db = getDB(uid);
   const input = clean(uid, raw);
-  if (db.generations.filter((x) => x.status === "running").length >= MAX_CONCURRENT)
+  if (!opts.skipCap && db.generations.filter((x) => x.status === "running").length >= MAX_CONCURRENT)
     throw new HttpError(429, `You already have ${MAX_CONCURRENT} images rendering. Wait for one to finish or cancel it.`);
   const s = sizeFor(input.aspect, input.tier);
   const usage = usageSummary(uid);
@@ -46,11 +51,11 @@ export function createGeneration(uid: string, raw: Partial<GenInput>): Gen {
   const b = db.settings.budget;
   if (!demoMode() && b.enforce && b.monthlyUsd > 0 && usage.spent + est.usd > b.monthlyUsd)
     throw new HttpError(402, `This would pass your $${b.monthlyUsd.toFixed(2)} monthly budget (about $${usage.spent.toFixed(2)} used, this image ≈ $${est.usd.toFixed(2)}). Raise the limit in Account, or lower quality/size.`);
-  const gen: Gen = { id: newId("gen"), input, size: s.param, status: "running", phase: "queued", images: [], costEstimate: est.usd, demo: demoMode(), favorite: false, createdAt: new Date().toISOString() };
+  const gen: Gen = { id: newId("gen"), input, size: s.param, status: "running", phase: "queued", images: [], costEstimate: est.usd, demo: demoMode(), favorite: false, createdAt: new Date().toISOString(), threadId: opts.threadId, msgId: opts.msgId };
   db.generations.push(gen);
   save(uid);
-  void run(uid, gen.id);
-  return gen;
+  const done = run(uid, gen.id).catch(() => {});
+  return { gen, done };
 }
 
 async function run(uid: string, id: string) {

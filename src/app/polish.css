@@ -225,7 +225,7 @@ button, a, summary, label { -webkit-tap-highlight-color: transparent; touch-acti
   .rail-links { position: relative; width: 100%; gap: 0; }
   .rail-link { height: 58px; padding: 0; font-size: 10px; gap: 2px; }
   .rail-link svg { width: 20px; height: 20px; }
-  .rail-ind { left: 0; right: auto; top: 6px; height: 46px; width: 20%; transform: translateX(calc(var(--i) * 100%)); background: transparent; }
+  .rail-ind { left: 0; right: auto; top: 6px; height: 46px; width: calc(100% / var(--n, 5)); transform: translateX(calc(var(--i) * 100%)); background: transparent; }
   .rail-ind::after { content: ""; position: absolute; inset: 0 10%; border-radius: 14px; background: var(--panel-2); }
   .rail-ind::before { left: 30%; right: 30%; top: -6px; bottom: auto; width: auto; height: 3px; border-radius: 0 0 3px 3px; }
   .content { padding-bottom: calc(68px + env(safe-area-inset-bottom)); }

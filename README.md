@@ -8,6 +8,7 @@ Describe → Upload references → Generate → Download. Powered by OpenAI **GP
 ## What's inside
 | Area | What you get |
 |---|---|
+| Chat | ChatGPT-style threads: talk to **GPT-6.1 Sol**, attach images, follow up ("make it darker", "the second one, wider"). Sol sees the whole conversation and every image, picks how many images to make from your message (any number up to the per-message limit), writes the image prompts, and edits earlier results. Five thinking efforts: Low · Medium · High · Extra high · Max |
 | Studio | Big prompt box, drag/drop/paste references (up to 16), 6 presets, aspect ratios 1:1 · 4:5 · 9:16 · 16:9 · 3:2 · 2:3, Sunburst/Flare, **Enhance** prompt, saved prompts |
 | Quality | Draft · Standard · High · Ultra · **Max** · Auto, complexity Low/Med/High, 1–4 images, Standard / High-res / 4K sizes |
 | Editing | Edit any result, "Preserve everything else", before/after slider, official 97 logo as a reference |
@@ -34,7 +35,8 @@ With no `OPENAI_API_KEY` the app runs in **Demo mode** (free placeholder images)
 | `SESSION_SECRET` | **yes** (production) | 32+ random characters (`openssl rand -hex 32`) |
 | `DATA_DIR` | recommended | Where images + data live. Use a persistent volume on a host (e.g. `/data`) |
 | `MONTHLY_BUDGET_USD` | no | Default monthly limit (default 5) |
-| `OPENAI_PROMPT_MODEL` | no | Text model for "Enhance" (falls back to a built-in enhancer) |
+| `OPENAI_PROMPT_MODEL` | no | Chat + Enhance model (default `gpt-6.1-sol`, called through the Responses API). Enhance falls back to a built-in enhancer if it fails |
+| `MAX_IMAGES_PER_REQUEST` | no | Most images one chat message may ask for (default 100). The monthly budget guard still applies |
 | `MOCK_OPENAI` | no | `1` forces Demo mode even with a key |
 | `PRICE_TEXT_IN` / `PRICE_IMAGE_IN` / `PRICE_IMAGE_OUT` | no | Override rates (USD per 1M tokens) if OpenAI changes pricing |
 

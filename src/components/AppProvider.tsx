@@ -35,10 +35,11 @@ export type Usage = {
 };
 export type Toast = { id: number; msg: string; kind: "info" | "ok" | "error"; out?: boolean };
 /** A reference image on its way to the server, with its real progress. */
-export type PendingUpload = { key: string; name: string; preview: string; stage: "queued" | "compressing" | "uploading" | "processing" | "done" | "error"; pct: number; error?: string };
+export type PendingUpload = { dest: "draft" | "chat"; key: string; name: string; preview: string; stage: "queued" | "compressing" | "uploading" | "processing" | "done" | "error"; pct: number; error?: string };
 
 type Ctx = {
   ready: boolean;
+  maxBatch: number;
   me: Me | null;
   demo: boolean;
   settings: Settings;
@@ -58,7 +59,10 @@ type Ctx = {
   retry: (g: Gen) => Promise<void>;
   patchGen: (id: string, p: { favorite?: boolean; projectId?: string }) => Promise<void>;
   deleteGen: (id: string) => Promise<void>;
-  uploadFiles: (files: File[]) => Promise<void>;
+  uploadFiles: (files: File[], into?: "draft" | "chat") => Promise<void>;
+  chatRefs: RefItem[];
+  setChatRefs: (f: RefItem[] | ((l: RefItem[]) => RefItem[])) => void;
+  upsertGens: (list: Gen[]) => void;
   addBrandRef: () => Promise<void>;
   removeAsset: (id: string) => Promise<void>;
   updateSettings: (p: Partial<Settings> | Record<string, unknown>) => Promise<void>;
@@ -154,6 +158,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
   const [demo, setDemo] = useState(false);
+  const [maxBatch, setMaxBatch] = useState(100);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
@@ -170,6 +175,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const prevStatus = useRef<Record<string, string>>({});
 
   const [pending, setPending] = useState<PendingUpload[]>([]);
+  const [chatRefs, setChatRefs] = useState<RefItem[]>([]);
+  const chatRefsRef = useRef<RefItem[]>([]);
+  chatRefsRef.current = chatRefs;
+  const destOf = useRef(new Map<string, "draft" | "chat">());
   const pendingRef = useRef<PendingUpload[]>([]);
   pendingRef.current = pending;
   const rawFiles = useRef(new Map<string, File>());
@@ -195,6 +204,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const b = await api("/api/bootstrap");
         setMe(b.user);
         setDemo(b.demo);
+        if (b.limits?.maxBatch) setMaxBatch(b.limits.maxBatch);
         setSettings(b.settings);
         setProjects(b.projects);
         setPrompts(b.prompts);
@@ -248,6 +258,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     next[i] = g;
     return next;
   }), []);
+  const upsertGens = useCallback((list: Gen[]) => list.forEach((g) => upsert(g)), [upsert]);
 
   // poll running generations
   const running = useMemo(() => gens.filter((g) => g.status === "running").map((g) => g.id).join(","), [gens]);
@@ -394,23 +405,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       patchPending(key, { stage: "done", pct: 1 });
       await new Promise((r) => setTimeout(r, 520)); // let the ✓ land before the tile swaps
       setAssets((list) => [a, ...list]);
-      setDraftState((d) => (d && d.refs.length < 16 ? { ...d, refs: [...d.refs, { id: a.id, name: a.name, kind: "upload" as const }] } : d));
+      const item: RefItem = { id: a.id, name: a.name, kind: "upload" };
+      if (destOf.current.get(key) === "chat") setChatRefs((l) => (l.length < 16 ? [...l, item] : l));
+      else setDraftState((d) => (d && d.refs.length < 16 ? { ...d, refs: [...d.refs, item] } : d));
+      destOf.current.delete(key);
       dropPending(key);
     } catch (e) {
       patchPending(key, { stage: "error", error: e instanceof ApiError ? e.message : "Upload failed." });
     }
   }, [patchPending, dropPending]);
 
-  const uploadFiles = useCallback(async (files: File[]) => {
+  const uploadFiles = useCallback(async (files: File[], into: "draft" | "chat" = "draft") => {
     if (!files.length || !draft) return;
-    const busy = pendingRef.current.filter((p) => p.stage !== "error").length;
-    const room = 16 - draft.refs.length - busy;
+    const busy = pendingRef.current.filter((p) => p.dest === into && p.stage !== "error").length;
+    const room = 16 - (into === "chat" ? chatRefsRef.current.length : draft.refs.length) - busy;
     if (room <= 0) return toast("You can use up to 16 reference images.", "error");
     if (files.length > room) toast(`Only ${room} more reference image${room === 1 ? "" : "s"} fit — added the first ${room}.`);
     const items = files.slice(0, room).map((file) => {
       const key = `up_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       rawFiles.current.set(key, file);
-      return { key, name: file.name || "reference", preview: URL.createObjectURL(file), stage: "queued" as const, pct: 0 };
+      destOf.current.set(key, into);
+      return { dest: into, key, name: file.name || "reference", preview: URL.createObjectURL(file), stage: "queued" as const, pct: 0 };
     });
     setPending((l) => [...l, ...items]);
     let next = 0;
@@ -521,8 +536,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ ready, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, setActiveId, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout }) as Ctx,
-    [ready, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout],
+    () => ({ ready, maxBatch, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, setActiveId, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, chatRefs, setChatRefs, upsertGens, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout }) as Ctx,
+    [ready, maxBatch, me, demo, settings, projects, prompts, assets, gens, usage, draft, setDraft, activeId, toast, submit, submitting, cancel, retry, patchGen, deleteGen, uploadFiles, chatRefs, upsertGens, addBrandRef, removeAsset, updateSettings, createProject, renameProject, deleteProject, savePrompt, deletePrompt, editImage, reuse, refreshUsage, logout],
   );
   const uploadsValue = useMemo(() => ({ pending, retryUpload, dismissUpload: dropPending }), [pending, retryUpload, dropPending]);
   const toastsValue = useMemo(() => ({ toasts, dismissToast }), [toasts, dismissToast]);

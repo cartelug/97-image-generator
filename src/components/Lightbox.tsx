@@ -8,7 +8,7 @@ import { fmtDate, fmtTime } from "@/lib/client";
 import { fmtUsd } from "@/lib/pricing";
 import { MODELS, QUALITIES } from "@/lib/models";
 
-export function Lightbox({ gen, imageId, onClose }: { gen: Gen; imageId: string; onClose: () => void }) {
+export function Lightbox({ gen, imageId, onClose, onEdit }: { gen: Gen; imageId: string; onClose: () => void; onEdit?: (gen: Gen, imageId: string) => void }) {
   const { patchGen, deleteGen, editImage, reuse, projects, toast, settings, setDraft, submit } = useApp();
   const [cmp, setCmp] = useState(false);
   const [confirm, setConfirm] = useState(false);
@@ -27,7 +27,7 @@ export function Lightbox({ gen, imageId, onClose }: { gen: Gen; imageId: string;
         <aside className="lb-side">
           <div className="lb-actions">
             <DownloadMenu imageId={img.id} ext={img.ext} primary />
-            <button className="btn ghost" onClick={() => { editImage(gen, img.id); onClose(); }}><Pencil size={16} /> Edit</button>
+            <button className="btn ghost" onClick={() => { (onEdit ?? editImage)(gen, img.id); onClose(); }}><Pencil size={16} /> Edit</button>
             <button className={`icon-btn${gen.favorite ? " on" : ""}`} aria-pressed={gen.favorite} aria-label={gen.favorite ? "Remove favourite" : "Add to favourites"} onClick={() => patchGen(gen.id, { favorite: !gen.favorite })}><Star size={18} fill={gen.favorite ? "currentColor" : "none"} /></button>
           </div>
           <div className="lb-block">

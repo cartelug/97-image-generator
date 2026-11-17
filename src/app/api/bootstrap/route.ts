@@ -1,7 +1,7 @@
 import { route, ok } from "@/lib/http";
 import { getDB } from "@/lib/store";
 import { usageSummary } from "@/lib/usage";
-import { demoMode } from "@/lib/config";
+import { demoMode, maxBatch } from "@/lib/config";
 import { MODELS } from "@/lib/models";
 export const dynamic = "force-dynamic";
 
@@ -10,6 +10,7 @@ export const GET = route(async (_req, _ctx, user) => {
   return ok({
     user,
     demo: demoMode(),
+    limits: { maxBatch: maxBatch() },
     models: MODELS,
     settings: db.settings,
     projects: db.projects,
